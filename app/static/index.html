@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>随访名册关联裁决</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --panel: #fff; --line: #dce3ec; --text: #1f2937;
+    --muted: #6b7280; --blue: #2563eb; --blue-d: #1d4ed8;
+    --red: #dc2626; --red-bg: #fef2f2; --green: #16a34a; --green-bg: #f0fdf4;
+    --amber: #d97706; --amber-bg: #fffbeb;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+         background: var(--bg); color: var(--text); font-size: 14px; }
+  header { background: #0f172a; color: #fff; padding: 14px 24px; display: flex;
+           align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .meta { color: #94a3b8; font-size: 12px; }
+  nav { display: flex; gap: 4px; background: var(--panel); padding: 0 16px;
+        border-bottom: 1px solid var(--line); }
+  nav button { background: none; border: none; padding: 14px 18px; font-size: 14px;
+               cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; }
+  nav button.active { color: var(--blue); border-bottom-color: var(--blue); font-weight: 600; }
+  main { padding: 20px 24px; max-width: 1200px; margin: 0 auto; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+           padding: 18px; margin-bottom: 16px; }
+  .panel h2 { margin: 0 0 12px; font-size: 15px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line);
+           vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: none;
+       background: #f8fafc; position: sticky; top: 0; }
+  tr.sel { background: #eff6ff; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; }
+  .tag.cohort { background: #e0e7ff; color: #3730a3; }
+  .tag.same { background: var(--green-bg); color: var(--green); }
+  .tag.diff { background: var(--red-bg); color: var(--red); }
+  .tag.rev { background: #f3f4f6; color: var(--muted); }
+  .btn { border: 1px solid var(--line); background: #fff; border-radius: 8px;
+         padding: 8px 14px; cursor: pointer; font-size: 13px; }
+  .btn:hover { border-color: var(--blue); color: var(--blue); }
+  .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .btn.primary:hover { background: var(--blue-d); color: #fff; }
+  .btn.danger { color: var(--red); border-color: #fecaca; }
+  .btn.danger:hover { background: var(--red-bg); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .stat { display: inline-flex; gap: 6px; background: #f8fafc; border: 1px solid var(--line);
+          border-radius: 8px; padding: 6px 12px; font-size: 13px; }
+  .stat b { color: var(--blue); }
+  input[type=text], input[type=search], select, textarea {
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px;
+    font-family: inherit; }
+  textarea { width: 100%; min-height: 160px; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .toast { position: fixed; right: 24px; bottom: 24px; max-width: 460px; z-index: 50;
+           display: flex; flex-direction: column; gap: 10px; }
+  .toast .t { border-radius: 10px; padding: 12px 16px; box-shadow: 0 8px 24px rgba(0,0,0,.12);
+              font-size: 13px; white-space: pre-wrap; }
+  .t.ok { background: var(--green-bg); border: 1px solid #bbf7d0; color: #166534; }
+  .t.err { background: var(--red-bg); border: 1px solid #fecaca; color: #991b1b; }
+  .t.info { background: var(--amber-bg); border: 1px solid #fde68a; color: #92400e; }
+  .conflict { background: var(--red-bg); border: 1px solid #fecaca; border-radius: 10px;
+              padding: 14px 16px; margin-top: 12px; }
+  .conflict h3 { margin: 0 0 8px; color: var(--red); font-size: 14px; }
+  .conflict pre { background: #fff; border: 1px solid var(--line); border-radius: 8px;
+                  padding: 10px; overflow: auto; font-size: 12px; max-height: 340px; }
+  .path-chain { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; }
+  .path-node { background: #fff; border: 1px solid var(--line); border-radius: 6px;
+               padding: 2px 8px; font-size: 12px; }
+  .path-arrow { color: var(--muted); }
+  .group-card { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+                margin-bottom: 10px; }
+  .group-card h3 { margin: 0 0 8px; font-size: 13px; color: var(--blue); }
+  .hidden { display: none; }
+  .sel-box { background: #eff6ff; border: 1px dashed #93c5fd; border-radius: 10px;
+             padding: 10px 14px; margin-bottom: 14px; display: flex; gap: 12px;
+             align-items: center; flex-wrap: wrap; }
+  code { background: #f1f5f9; padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>随访入组名册 · 关联裁决工作台</h1>
+  <span class="meta">队列 + 来源ID 共同标识 · 原记录不可变 · 同人关系可传递</span>
+</header>
+
+<nav>
+  <button data-tab="records" class="active">记录与裁决</button>
+  <button data-tab="groups">分组视图</button>
+  <button data-tab="adjudications">裁决历史</button>
+  <button data-tab="io">导入 / 导出</button>
+</nav>
+
+<main>
+  <!-- ============ 记录与裁决 ============ -->
+  <section id="tab-records">
+    <div class="panel">
+      <div class="toolbar">
+        <span class="stat">记录 <b id="st-records">-</b></span>
+        <span class="stat">分组 <b id="st-groups">-</b></span>
+        <span class="stat">生效裁决 <b id="st-adj">-</b></span>
+        <span style="flex:1"></span>
+        <input type="search" id="q" placeholder="搜索 队列 / 来源ID / 化名" style="width:260px" />
+        <button class="btn" id="refresh-btn">刷新</button>
+      </div>
+      <div class="sel-box">
+        <b>已选两条记录：</b>
+        <span id="sel-info" class="muted">在下表点击两行进行选择（再次点击可取消）</span>
+        <span style="flex:1"></span>
+        <button class="btn primary" id="btn-same" disabled>确认同一参与者</button>
+        <button class="btn danger" id="btn-diff" disabled>确认不同人</button>
+        <button class="btn" id="btn-path" disabled>查询同人路径</button>
+      </div>
+      <div id="conflict-box"></div>
+      <table>
+        <thead><tr><th>ID</th><th>队列</th><th>来源ID</th><th>化名</th><th>当前分组</th></tr></thead>
+        <tbody id="records-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 分组 ============ -->
+  <section id="tab-groups" class="hidden">
+    <div class="panel">
+      <div class="toolbar">
+        <h2 style="margin:0">当前分组（每组同一队列最多一条）</h2>
+        <span style="flex:1"></span>
+        <a class="btn" href="/api/export" download>下载映射 CSV</a>
+        <button class="btn" id="groups-refresh">刷新</button>
+      </div>
+      <div id="groups-body"></div>
+    </div>
+  </section>
+
+  <!-- ============ 裁决历史 ============ -->
+  <section id="tab-adjudications" class="hidden">
+    <div class="panel">
+      <div class="toolbar">
+        <h2 style="margin:0">裁决历史（含已撤销）</h2>
+        <span style="flex:1"></span>
+        <button class="btn" id="adj-refresh">刷新</button>
+      </div>
+      <table>
+        <thead><tr><th>ID</th><th>记录 A</th><th>记录 B</th><th>裁决</th><th>状态</th>
+        <th>时间</th><th>操作</th></tr></thead>
+        <tbody id="adj-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 导入导出 ============ -->
+  <section id="tab-io" class="hidden">
+    <div class="panel">
+      <h2>导入名册 CSV</h2>
+      <p class="muted">
+        必需列：<code>cohort</code>（队列）、<code>source_id</code>（来源ID）、<code>alias</code>（化名）；
+        也接受中文表头 <code>队列,来源ID,化名</code>。
+        以「队列 + 来源ID」为自然键，重复行跳过，原记录永不修改。
+      </p>
+      <div class="toolbar">
+        <input type="file" id="csv-file" accept=".csv,text/csv" />
+        <button class="btn primary" id="btn-upload">上传导入</button>
+      </div>
+      <p class="muted">或直接粘贴 CSV 文本：</p>
+      <textarea id="csv-raw" placeholder="cohort,source_id,alias&#10;CARDIO-A,1001,张明"></textarea>
+      <div class="toolbar" style="margin-top:10px">
+        <button class="btn primary" id="btn-paste">粘贴导入</button>
+        <button class="btn" id="btn-sample">载入虚构样例</button>
+      </div>
+      <div id="import-result"></div>
+    </div>
+    <div class="panel">
+      <h2>导出来源 → 分组映射</h2>
+      <p class="muted">下载内容来自单一已提交快照，列：cohort, source_id, alias, group_id。</p>
+      <a class="btn primary" href="/api/export" download>下载 source_group_mapping.csv</a>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const SAMPLE_CSV = `cohort,source_id,alias
+CARDIO-A,A-1001,张明
+CARDIO-A,A-1002,李娜
+CARDIO-A,A-1003,王芳
+CARDIO-B,B-2001,张铭
+CARDIO-B,B-2002,李呐
+CARDIO-B,B-2003,陈杰
+ONCO-C,C-3001,张明明
+ONCO-C,C-3002,王芳
+ONCO-C,C-3003,刘洋
+REHAB-D,D-4001,张明（随访失联）
+REHAB-D,D-4002,陈浩
+REHAB-D,D-4003,李娜
+CARDIO-A,A-1004,赵强
+CARDIO-B,B-2004,赵强
+ONCO-C,C-3004,赵强`;
+
+let records = [];
+let selected = [];
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function toast(msg, kind = "info") {
+  const el = document.createElement("div");
+  el.className = `t ${kind}`;
+  el.textContent = msg;
+  $("toast").appendChild(el);
+  setTimeout(() => el.remove(), kind === "err" ? 12000 : 5000);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" }, ...opts,
+  });
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { detail: text }; }
+  if (!res.ok) {
+    const err = new Error(data.detail || `HTTP ${res.status}`);
+    err.status = res.status; err.data = data; throw err;
+  }
+  return data;
+}
+
+function brief(r) {
+  return `#${r.id} [${r.cohort}] ${r.source_id} / ${r.alias}`;
+}
+
+async function loadStats() {
+  const s = await api("/api/stats");
+  $("st-records").textContent = s.records;
+  $("st-groups").textContent = s.groups;
+  $("st-adj").textContent = s.active_adjudications;
+}
+
+async function loadRecords() {
+  records = await api("/api/records");
+  renderRecords();
+  loadStats();
+}
+
+function renderRecords() {
+  const q = $("q").value.trim().toLowerCase();
+  const body = $("records-body");
+  body.innerHTML = "";
+  records
+    .filter(r => !q || [r.cohort, r.source_id, r.alias].join(" ").toLowerCase().includes(q))
+    .forEach(r => {
+      const tr = document.createElement("tr");
+      if (selected.includes(r.id)) tr.classList.add("sel");
+      tr.innerHTML = `<td>${r.id}</td>
+        <td><span class="tag cohort">${esc(r.cohort)}</span></td>
+        <td>${esc(r.source_id)}</td><td>${esc(r.alias)}</td>
+        <td><code>G${r.group_id}</code></td>`;
+      tr.onclick = () => toggleSelect(r.id);
+      body.appendChild(tr);
+    });
+  updateSelection();
+}
+
+function toggleSelect(id) {
+  const i = selected.indexOf(id);
+  if (i >= 0) selected.splice(i, 1);
+  else {
+    if (selected.length >= 2) selected.shift();
+    selected.push(id);
+  }
+  renderRecords();
+}
+
+function updateSelection() {
+  const box = $("sel-info");
+  const ready = selected.length === 2;
+  if (selected.length === 0) {
+    box.textContent = "在下表点击两行进行选择（再次点击可取消）";
+  } else {
+    box.innerHTML = selected.map(id => {
+      const r = records.find(x => x.id === id);
+      return r ? `<span class="path-node">${esc(brief(r))}</span>` : "";
+    }).join('<span class="path-arrow">↔</span>');
+  }
+  $("btn-same").disabled = !ready;
+  $("btn-diff").disabled = !ready;
+  $("btn-path").disabled = !ready;
+}
+
+function renderConflict(data) {
+  const box = $("conflict-box");
+  const fmtPath = (p) => (p || []).map(x =>
+    `<span class="path-node">${esc(brief(x))}</span>`).join(
+    '<span class="path-arrow">→</span>') || '<span class="muted">无</span>';
+
+  let html = `<div class="conflict"><h3>⛔ 整次裁决被拒绝：${esc(data.detail || "冲突")}</h3>`;
+  if (data.same_path) {
+    html += `<p>已存在的同人连接路径：</p><div class="path-chain">${fmtPath(data.same_path)}</div>`;
+  }
+  if (data.cohort_conflicts?.length) {
+    html += "<p><b>同队列重复（每组同一队列最多一条）：</b></p>";
+    data.cohort_conflicts.forEach(c => {
+      html += `<p>队列 <code>${esc(c.cohort)}</code>：</p><div class="path-chain">` +
+        c.records.map(r => `<span class="path-node">${esc(brief(r))}</span>`)
+          .join('<span class="path-arrow">↔</span>') + "</div>";
+    });
+  }
+  if (data.different_conflicts?.length) {
+    html += "<p><b>不同人记录将被合入同组：</b></p>";
+    data.different_conflicts.forEach(d => {
+      html += `<div class="path-chain">
+        <span class="path-node">${esc(brief(d.left))}</span>
+        <span class="path-arrow">⚔ 不同人 ⚔</span>
+        <span class="path-node">${esc(brief(d.right))}</span></div>
+        <p class="muted">连接路径 A：</p><div class="path-chain">${fmtPath(d.path_to_a)}</div>
+        <p class="muted">连接路径 B：</p><div class="path-chain">${fmtPath(d.path_to_b)}</div>`;
+    });
+  }
+  html += `<details style="margin-top:8px"><summary class="muted">原始冲突 JSON</summary>
+    <pre>${esc(JSON.stringify(data, null, 2))}</pre></details></div>`;
+  box.innerHTML = html;
+}
+
+async function submitDecision(decision) {
+  $("conflict-box").innerHTML = "";
+  const [record_a, record_b] = selected;
+  try {
+    const r = await api("/api/adjudicate", {
+      method: "POST",
+      body: JSON.stringify({ record_a, record_b, decision }),
+    });
+    toast((decision === "same" ? "同人裁决：" : "不同人裁决：") + r.message, "ok");
+    selected = [];
+    await loadRecords();
+  } catch (e) {
+    if (e.status === 409) { renderConflict(e.data); toast(e.message, "err"); }
+    else toast("请求失败：" + e.message, "err");
+  }
+}
+
+async function queryPath() {
+  const [record_a, record_b] = selected;
+  const r = await api("/api/same-path", {
+    method: "POST", body: JSON.stringify({ record_a, record_b }),
+  });
+  if (!r.connected) { toast("两条记录当前没有同人连接路径", "info"); return; }
+  $("conflict-box").innerHTML =
+    `<div class="conflict" style="background:#f0fdf4;border-color:#bbf7d0">
+      <h3 style="color:var(--green)">同人连接路径（${r.path.length - 1} 条边）</h3>
+      <div class="path-chain">${r.path.map(x =>
+        `<span class="path-node">${esc(brief(x))}</span>`)
+        .join('<span class="path-arrow">→</span>')}</div></div>`;
+}
+
+async function loadGroups() {
+  const groups = await api("/api/groups");
+  const box = $("groups-body");
+  box.innerHTML = groups.map(g => `
+    <div class="group-card">
+      <h3>分组 G${g.group_id} · ${g.members.length} 条记录</h3>
+      <table><thead><tr><th>队列</th><th>来源ID</th><th>化名</th></tr></thead>
+      <tbody>${g.members.map(m => `<tr>
+        <td><span class="tag cohort">${esc(m.cohort)}</span></td>
+        <td>${esc(m.source_id)}</td><td>${esc(m.alias)}</td></tr>`).join("")}
+      </tbody></table>
+    </div>`).join("") || '<p class="muted">暂无数据，请先导入 CSV。</p>';
+}
+
+async function loadAdjudications() {
+  const rows = await api("/api/adjudications?active_only=false");
+  $("adj-body").innerHTML = rows.map(a => `
+    <tr>
+      <td>${a.id}</td>
+      <td><span class="path-node">#${a.left_id} [${esc(a.left_cohort)}] ${esc(a.left_source_id)} / ${esc(a.left_alias)}</span></td>
+      <td><span class="path-node">#${a.right_id} [${esc(a.right_cohort)}] ${esc(a.right_source_id)} / ${esc(a.right_alias)}</span></td>
+      <td>${a.decision === "same"
+        ? '<span class="tag same">同一参与者</span>'
+        : '<span class="tag diff">不同人</span>'}</td>
+      <td>${a.active ? '<span class="tag same">生效中</span>'
+        : `<span class="tag rev">已撤销 ${esc(a.revoked_at || "")}</span>`}</td>
+      <td class="muted">${esc(a.created_at)}</td>
+      <td>${a.active
+        ? `<button class="btn danger" onclick="revoke(${a.id})">撤销</button>` : ""}</td>
+    </tr>`).join("") || '<tr><td colspan="7" class="muted">暂无裁决。</td></tr>';
+}
+
+window.revoke = async function (id) {
+  if (!confirm(`确认撤销裁决 #${id}？分组将根据剩余同人关系重新计算。`)) return;
+  try {
+    const r = await api("/api/revoke", {
+      method: "POST", body: JSON.stringify({ adjudication_id: id }),
+    });
+    toast(`已撤销 #${id}：分组 ${r.groups_before} → ${r.groups_after}`, "ok");
+  } catch (e) {
+    toast("撤销失败（已保留原状）：" + e.message, "err");
+  }
+  await loadAdjudications();
+  await loadRecords();
+  await loadGroups();
+};
+
+async function doImport(body, isForm) {
+  try {
+    const opts = isForm ? { method: "POST", body }
+      : { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ raw: body }) };
+    const r = await api(isForm ? "/api/import/file" : "/api/import", opts);
+    $("import-result").innerHTML =
+      `<div class="conflict" style="background:var(--green-bg);border-color:#bbf7d0">
+        <h3 style="color:var(--green)">导入完成</h3>
+        <p>新增 <b>${r.inserted}</b> 条；跳过已存在 <b>${r.skipped_existing}</b> 条；
+        文件内重复 <b>${r.duplicate_in_file}</b> 条。</p>
+        ${r.line_errors.length ? `<pre>${esc(JSON.stringify(r.line_errors, null, 2))}</pre>` : ""}
+      </div>`;
+    toast(`导入完成：新增 ${r.inserted}，跳过 ${r.skipped_existing}`, "ok");
+    await loadRecords();
+  } catch (e) {
+    $("import-result").innerHTML =
+      `<div class="conflict"><h3>导入失败</h3><pre>${esc(JSON.stringify(e.data, null, 2))}</pre></div>`;
+    toast("导入失败：" + e.message, "err");
+  }
+}
+
+// ---- wiring ----
+document.querySelectorAll("nav button").forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    document.querySelectorAll("main section").forEach(s => s.classList.add("hidden"));
+    $("tab-" + btn.dataset.tab).classList.remove("hidden");
+    if (btn.dataset.tab === "groups") loadGroups();
+    if (btn.dataset.tab === "adjudications") loadAdjudications();
+  };
+});
+$("refresh-btn").onclick = loadRecords;
+$("groups-refresh").onclick = loadGroups;
+$("adj-refresh").onclick = loadAdjudications;
+$("q").oninput = renderRecords;
+$("btn-same").onclick = () => submitDecision("same");
+$("btn-diff").onclick = () => submitDecision("different");
+$("btn-path").onclick = queryPath;
+$("btn-upload").onclick = () => {
+  const f = $("csv-file").files[0];
+  if (!f) return toast("请先选择 CSV 文件", "err");
+  const fd = new FormData(); fd.append("file", f);
+  doImport(fd, true);};
+$("btn-paste").onclick = () => {
+  const raw = $("csv-raw").value.trim();
+  if (!raw) return toast("请先粘贴 CSV 文本", "err");
+  doImport(raw, false);
+};
+$("btn-sample").onclick = () => { $("csv-raw").value = SAMPLE_CSV; };
+
+loadRecords();
+</script>
+</body>
+</html>

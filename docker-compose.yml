@@ -1,0 +1,68 @@
+services:
+  # Two independent web processes sharing one SQLite database file via a
+  # named volume. Each process opens its own connections; SQLite WAL +
+  # BEGIN IMMEDIATE serialise their concurrent adjudications.
+  web1:
+    build: .
+    environment:
+      ER_DB_PATH: /data/er.db
+      ER_BUSY_TIMEOUT_MS: "10000"
+    volumes:
+      - er-data:/data
+    ports:
+      - "8001:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  web2:
+    build: .
+    environment:
+      ER_DB_PATH: /data/er.db
+      ER_BUSY_TIMEOUT_MS: "10000"
+    volumes:
+      - er-data:/data
+    ports:
+      - "8002:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # One-shot import of the fictional sample roster into the shared database.
+  # It waits for a web process to finish schema initialisation, then posts
+  # the CSV through the HTTP API and exits.
+  seed:
+    build: .
+    depends_on:
+      web1:
+        condition: service_healthy
+    environment:
+      ER_DB_PATH: /data/er.db
+    volumes:
+      - er-data:/data
+      - ./sample_data:/sample_data:ro
+    entrypoint: ["python", "-c"]
+    command:
+      - |
+        import json, time, urllib.request
+        data = open('/sample_data/sample_roster.csv','rb').read()
+        boundary = '----erseed'
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"sample_roster.csv\"\r\nContent-Type: text/csv\r\n\r\n').encode() + data + f'\r\n--{boundary}--\r\n'.encode()
+        req = urllib.request.Request('http://web1:8000/api/import/file', data=body,
+            headers={'Content-Type': f'multipart/form-data; boundary={boundary}'})
+        for attempt in range(10):
+            try:
+                print(json.dumps(json.load(urllib.request.urlopen(req, timeout=10)), ensure_ascii=False))
+                break
+            except Exception as exc:
+                print('seed retry:', exc); time.sleep(2)
+        else:
+            raise SystemExit('seed failed')
+    restart: "no"
+
+volumes:
+  er-data:
