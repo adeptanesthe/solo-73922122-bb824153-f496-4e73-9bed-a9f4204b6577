@@ -4,14 +4,27 @@ The application runs as two (or more) uvicorn processes sharing one SQLite
 database file.  Two kinds of connections are exposed:
 
 * :func:`get_read_conn` -- a read-only connection (``mode=ro``) used for all
-  relationship computation (graph traversal, group listing, CSV export).
-  These connections never take a write lock.
-* :func:`write_tx` -- a short-lived *deferred-immediate* write transaction.
-  ``BEGIN IMMEDIATE`` acquires the reserved lock up front so that two
-  concurrent adjudications are serialised; the second one waits on
-  ``busy_timeout`` and then validates the whole partition constraint against
-  the already-committed state of the first.  Either the whole adjudication
-  commits or the database is rolled back to its previous state.
+  relationship computation (graph traversal, partition recomputation,
+  conflict-path search, group listing, CSV export).  These connections never
+  take a write lock; in WAL mode a reader never blocks the writer, so another
+  process can commit adjudications while a computation is in flight.
+* :func:`write_tx` -- a short-lived *immediate* write transaction used only
+  to apply an already-computed plan.  ``BEGIN IMMEDIATE`` acquires the
+  reserved lock up front so concurrent commits are serialised; the commit
+  first re-checks the version counters in the ``meta`` table and rolls back
+  if the snapshot the computation was based on has moved on (the caller then
+  recomputes on a fresh snapshot).  Either the whole plan commits or the
+  database is rolled back to its previous state.
+
+The ``meta`` table holds two monotonic counters that make the optimistic
+compute-outside-the-lock protocol possible:
+
+* ``records_version`` -- bumped by roster imports;
+* ``edges_version``   -- bumped by adjudications and revocations.
+
+A mutation may only commit its precomputed plan when the counters it depends
+on are unchanged since its snapshot was taken; otherwise interleaved changes
+would be overwritten by stale results or silently lost.
 """
 
 from __future__ import annotations
@@ -72,6 +85,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_active_pair
     ON adjudications(left_id, right_id) WHERE active = 1;
 CREATE INDEX IF NOT EXISTS idx_adjudications_active
     ON adjudications(left_id, right_id) WHERE active = 1;
+
+-- Optimistic-concurrency version counters.  Every mutation bumps the
+-- counter(s) covering the data it changed, inside the same transaction, so a
+-- concurrent computation can detect that its snapshot went stale and must be
+-- recomputed instead of committing stale results over newer changes.
+CREATE TABLE IF NOT EXISTS meta (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    records_version INTEGER NOT NULL DEFAULT 0,
+    edges_version   INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO meta (id) VALUES (1);
 """ % (BUSY_TIMEOUT_MS,)
 
 
@@ -106,12 +130,14 @@ def get_read_conn(db_path: str | None = None) -> sqlite3.Connection:
 
 @contextmanager
 def write_tx(db_path: str | None = None) -> Iterator[sqlite3.Connection]:
-    """Open a write transaction with an immediate reserved lock.
+    """Open a short write transaction with an immediate reserved lock.
 
-    Commits on clean exit, rolls back on any exception.  All constraint
-    validation for an adjudication happens inside this single transaction,
-    which is what makes "two individually-legal decisions that together break
-    the partition" impossible under concurrency.
+    Commits on clean exit, rolls back on any exception.  The transaction is
+    kept deliberately small: the caller has already done its graph
+    computation on a lock-free snapshot and only re-validates the ``meta``
+    version counters here before applying the planned writes.  A version
+    mismatch (or any other failure) rolls everything back, so a stale
+    computation can never overwrite or lose concurrently committed work.
     """
     db_path = db_path or DEFAULT_DB_PATH
     conn = sqlite3.connect(db_path, timeout=BUSY_TIMEOUT_MS / 1000.0)

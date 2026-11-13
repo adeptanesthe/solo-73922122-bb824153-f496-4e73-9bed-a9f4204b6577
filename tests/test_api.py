@@ -8,6 +8,8 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import tempfile
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -297,3 +299,166 @@ def test_concurrent_different_vs_same_on_same_pair(client):
     assert sorted(r.status_code for r in results) == [200, 409]
     active = client.get("/api/adjudications").json()
     assert len(active) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Lock-free computation: the fix under test
+# --------------------------------------------------------------------------- #
+
+def _paused_call(client, path, payload, outcome, key="resp"):
+    """Fire a request whose computation phase is paused (demo hook)."""
+    outcome[key] = client.post(path, json={**payload, "demo_pause_seconds": 2.5})
+
+
+def test_computation_phase_does_not_hold_write_lock(client):
+    # The core fix: while one request is inside its (paused) relationship
+    # computation, an unrelated adjudication from the same or another entry
+    # point must commit immediately instead of waiting for the write lock.
+    _import(client, [("C1", "a", "甲"), ("C2", "b", "乙"),
+                     ("C3", "c", "丙"), ("C4", "d", "丁")])
+    outcome = {}
+    t = threading.Thread(target=_paused_call,
+                         args=(client, "/api/adjudicate",
+                               {"record_a": 1, "record_b": 2, "decision": "same"},
+                               outcome))
+    t.start()
+    time.sleep(0.6)  # let the first request settle into its computation pause
+
+    start = time.monotonic()
+    resp = _adj(client, 3, 4, "same")  # unrelated pair: must not wait
+    elapsed = time.monotonic() - start
+    t.join(timeout=15)
+
+    assert resp.status_code == 200
+    assert elapsed < 2.0, f"无关裁决等待了 {elapsed:.2f}s——计算期间仍占着写锁"
+    assert outcome["resp"].status_code == 200
+    # The paused request recomputed on the newer snapshot and committed too:
+    # neither adjudication was overwritten or lost.
+    gm = _group_map(client)
+    assert gm[1] == gm[2] and gm[3] == gm[4] and gm[1] != gm[3]
+    assert len(client.get("/api/adjudications").json()) == 2
+
+
+def test_interleaved_conflicting_adjudication_still_rejected(client):
+    # Individually legal, jointly illegal — now with the loser computing on a
+    # stale snapshot: the version check must force a recompute that rejects.
+    _import(client, [("C1", "a", "甲"), ("C2", "b", "乙"), ("C3", "c", "丙")])
+    assert _adj(client, 1, 3, "different").status_code == 200
+
+    outcome = {}
+    t = threading.Thread(target=_paused_call,
+                         args=(client, "/api/adjudicate",
+                               {"record_a": 1, "record_b": 2, "decision": "same"},
+                               outcome))
+    t.start()
+    time.sleep(0.6)
+    resp = _adj(client, 2, 3, "same")  # commits while the other is computing
+    t.join(timeout=15)
+
+    assert resp.status_code == 200
+    assert outcome["resp"].status_code == 409
+    assert outcome["resp"].json()["code"] == "merge_conflict"
+    # Final state honours every invariant: the 1...3 barrier is intact and
+    # exactly one of the racing merges committed.
+    gm = _group_map(client)
+    assert gm[2] == gm[3] and gm[1] != gm[2]
+    active = {(a["left_id"], a["right_id"], a["decision"])
+              for a in client.get("/api/adjudications").json()}
+    assert active == {(1, 3, "different"), (2, 3, "same")}
+
+
+def test_import_during_paused_computation_is_not_lost(client):
+    # A roster import committed while another request computes must survive:
+    # the stale computation retries and its partition rewrite covers the new
+    # records instead of silently ungrouping them.
+    _import(client, [("C1", "a", "甲"), ("C2", "b", "乙")])
+    outcome = {}
+    t = threading.Thread(target=_paused_call,
+                         args=(client, "/api/adjudicate",
+                               {"record_a": 1, "record_b": 2, "decision": "same"},
+                               outcome))
+    t.start()
+    time.sleep(0.6)
+    imp = _import(client, [("C3", "c", "丙"), ("C4", "d", "丁")])
+    t.join(timeout=15)
+
+    assert imp["inserted"] == 2
+    assert outcome["resp"].status_code == 200
+    records = client.get("/api/records").json()
+    assert len(records) == 4
+    assert all(r["group_id"] for r in records)  # nobody lost its group
+    gm = {r["id"]: r["group_id"] for r in records}
+    assert gm[1] == gm[2]
+    assert len({gm[1], gm[3], gm[4]}) == 3  # new records kept singleton groups
+
+
+def test_revoke_during_paused_computation_keeps_both_changes(client):
+    # A revocation committed during another request's computation must not be
+    # clobbered by that request's stale partition rewrite, and vice versa.
+    _import(client, [("C1", "a", "甲"), ("C2", "b", "乙"),
+                     ("C3", "c", "丙"), ("C4", "d", "丁")])
+    _adj(client, 1, 2, "same")
+    _adj(client, 3, 4, "same")
+    adj_id = next(a for a in client.get("/api/adjudications").json()
+                  if a["left_id"] == 3)["id"]
+
+    outcome = {}
+    t = threading.Thread(target=_paused_call,
+                         args=(client, "/api/revoke",
+                               {"adjudication_id": adj_id}, outcome))
+    t.start()
+    time.sleep(0.6)
+    resp = _adj(client, 2, 3, "different")  # commits while the revoke computes
+    t.join(timeout=15)
+
+    assert resp.status_code == 200
+    assert outcome["resp"].status_code == 200
+    gm = _group_map(client)
+    assert gm[1] == gm[2]           # the untouched merge survives
+    assert gm[3] != gm[4]           # the revoke's split survives
+    assert gm[2] != gm[3]           # the fresh different barrier holds
+    decisions = {(a["left_id"], a["right_id"]): a["decision"]
+                 for a in client.get("/api/adjudications").json()}
+    assert decisions == {(1, 2): "same", (2, 3): "different"}
+
+
+def test_demo_gate_pauses_and_releases_computation(client):
+    _import(client, [("C1", "a", "甲"), ("C2", "b", "乙")])
+    assert client.get("/api/demo/gate").json()["open"] is True
+    assert client.post("/api/demo/gate", json={"open": False}).json()["open"] is False
+    try:
+        outcome = {}
+        t = threading.Thread(target=lambda: outcome.update(
+            resp=_adj(client, 1, 2, "same")))
+        t.start()
+        t.join(timeout=1.0)
+        # Parked inside the computation phase: no response, and (per the other
+        # tests) no write lock held either.
+        assert t.is_alive() and "resp" not in outcome
+        client.post("/api/demo/gate", json={"open": True})
+        t.join(timeout=15)
+        assert outcome["resp"].status_code == 200
+    finally:
+        client.post("/api/demo/gate", json={"open": True})
+    gm = _group_map(client)
+    assert gm[1] == gm[2]
+
+
+def test_merge_conflict_detected_regardless_of_edge_orientation(client):
+    # The cross-group different-edge check must be symmetric: the barrier
+    # edge (1,5) has its *left* endpoint in the second of the merged groups,
+    # which a left-in-group-A query would silently miss.
+    _import(client, [("C1", "a", "甲"), ("C2", "b", "乙"), ("C3", "c", "丙"),
+                     ("C4", "d", "丁"), ("C5", "e", "戊")])
+    assert _adj(client, 2, 5, "same").status_code == 200   # group X = {2,5}
+    assert _adj(client, 1, 4, "same").status_code == 200   # group Y = {1,4}
+    assert _adj(client, 1, 5, "different").status_code == 200  # 1 in Y, 5 in X
+    resp = _adj(client, 2, 4, "same")  # merging X+Y would group 1 with 5
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["code"] == "merge_conflict"
+    assert len(body["different_conflicts"]) == 1
+    assert {body["different_conflicts"][0]["left"]["id"],
+            body["different_conflicts"][0]["right"]["id"]} == {1, 5}
+    gm = _group_map(client)
+    assert gm[1] != gm[5]

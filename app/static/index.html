@@ -92,6 +92,7 @@
   <button data-tab="groups">分组视图</button>
   <button data-tab="adjudications">裁决历史</button>
   <button data-tab="io">导入 / 导出</button>
+  <button data-tab="demo">并发演示</button>
 </nav>
 
 <main>
@@ -148,6 +149,37 @@
         <th>时间</th><th>操作</th></tr></thead>
         <tbody id="adj-body"></tbody>
       </table>
+    </div>
+  </section>
+
+  <!-- ============ 并发演示 ============ -->
+  <section id="tab-demo" class="hidden">
+    <div class="panel">
+      <h2>可控暂停的关系计算（双入口交错演示）</h2>
+      <p class="muted">
+        关系计算（图遍历 / 分组重算 / 冲突路径）<b>不持有 SQLite 写锁</b>：
+        计算期间另一入口的裁决、撤销、导入都能立即提交；本请求在提交前复核版本，
+        若状态已变化会自动在新快照上重算，交错变更不会被覆盖或丢失。
+      </p>
+      <div class="toolbar">
+        <span class="stat">本进程计算闸门 <b id="gate-state">-</b></span>
+        <button class="btn danger" id="btn-gate-close">关闭闸门（暂停本进程计算）</button>
+        <button class="btn primary" id="btn-gate-open">打开闸门（恢复计算）</button>
+        <button class="btn" id="gate-refresh">刷新状态</button>
+      </div>
+      <div class="toolbar">
+        <label class="muted" for="pause-seconds">裁决 / 撤销的计算暂停秒数（0–30）：</label>
+        <input type="text" id="pause-seconds" value="0" style="width:70px" />
+      </div>
+      <p class="muted">
+        手动复现步骤：① 在两个浏览器页签分别打开两个入口（如 :8001 与 :8002）；
+        ② 在本页签关闭闸门（或把暂停秒数调大），到「记录与裁决」提交一次裁决——请求会停在计算阶段；
+        ③ 切到另一页签提交<b>无关记录</b>的裁决或导入名册——立即成功，无需等待；
+        ④ 回到本页签打开闸门——被暂停的请求自动重算后完成；
+        ⑤ 若两边操作恰好「分别合法、合在一起冲突」，后提交者会整次拒绝（409）。
+        命令行等价演示：<code>python -I scripts/interleaved_demo.py</code>。
+        闸门状态是<b>单进程</b>的，只影响当前页签所连的那个 Web 进程。
+      </p>
     </div>
   </section>
 
@@ -231,6 +263,18 @@ async function api(path, opts = {}) {
 
 function brief(r) {
   return `#${r.id} [${r.cohort}] ${r.source_id} / ${r.alias}`;
+}
+
+function demoPause() {
+  const v = parseFloat($("pause-seconds").value);
+  return Number.isFinite(v) ? Math.min(Math.max(v, 0), 30) : 0;
+}
+
+async function loadGate() {
+  const g = await api("/api/demo/gate");
+  const el = $("gate-state");
+  el.textContent = g.open ? "打开（计算正常进行）" : "关闭（本进程计算已暂停）";
+  el.style.color = g.open ? "var(--green)" : "var(--red)";
 }
 
 async function loadStats() {
@@ -331,7 +375,8 @@ async function submitDecision(decision) {
   try {
     const r = await api("/api/adjudicate", {
       method: "POST",
-      body: JSON.stringify({ record_a, record_b, decision }),
+      body: JSON.stringify({ record_a, record_b, decision,
+                             demo_pause_seconds: demoPause() }),
     });
     toast((decision === "same" ? "同人裁决：" : "不同人裁决：") + r.message, "ok");
     selected = [];
@@ -392,7 +437,9 @@ window.revoke = async function (id) {
   if (!confirm(`确认撤销裁决 #${id}？分组将根据剩余同人关系重新计算。`)) return;
   try {
     const r = await api("/api/revoke", {
-      method: "POST", body: JSON.stringify({ adjudication_id: id }),
+      method: "POST",
+      body: JSON.stringify({ adjudication_id: id,
+                             demo_pause_seconds: demoPause() }),
     });
     toast(`已撤销 #${id}：分组 ${r.groups_before} → ${r.groups_after}`, "ok");
   } catch (e) {
@@ -434,11 +481,23 @@ document.querySelectorAll("nav button").forEach(btn => {
     $("tab-" + btn.dataset.tab).classList.remove("hidden");
     if (btn.dataset.tab === "groups") loadGroups();
     if (btn.dataset.tab === "adjudications") loadAdjudications();
+    if (btn.dataset.tab === "demo") loadGate();
   };
 });
 $("refresh-btn").onclick = loadRecords;
 $("groups-refresh").onclick = loadGroups;
 $("adj-refresh").onclick = loadAdjudications;
+$("gate-refresh").onclick = loadGate;
+$("btn-gate-close").onclick = async () => {
+  await api("/api/demo/gate", { method: "POST", body: JSON.stringify({ open: false }) });
+  toast("本进程关系计算已暂停（不持任何锁）；另一入口仍可立即提交", "info");
+  loadGate();
+};
+$("btn-gate-open").onclick = async () => {
+  await api("/api/demo/gate", { method: "POST", body: JSON.stringify({ open: true }) });
+  toast("闸门已打开，被暂停的请求将自动重算并完成", "ok");
+  loadGate();
+};
 $("q").oninput = renderRecords;
 $("btn-same").onclick = () => submitDecision("same");
 $("btn-diff").onclick = () => submitDecision("different");

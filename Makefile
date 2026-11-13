@@ -1,4 +1,4 @@
-.PHONY: help install test run-web1 run-web2 demo concurrency-check clean docker-up docker-down
+.PHONY: help install test run-web1 run-web2 demo interleaved-demo concurrency-check clean docker-up docker-down
 
 help:
 	@echo "make install            安装运行与测试依赖"
@@ -6,6 +6,7 @@ help:
 	@echo "make run-web1           启动 Web 进程 1 (127.0.0.1:8101)"
 	@echo "make run-web2           启动 Web 进程 2 (127.0.0.1:8102，共库)"
 	@echo "make demo               双进程端到端演示（需先启动两个进程并导入样例）"
+	@echo "make interleaved-demo   可控暂停关系计算的双入口交错演示（默认 :8001/:8002）"
 	@echo "make concurrency-check  跨进程并发竞赛与不变量校验"
 	@echo "make docker-up          docker compose 构建并启动（含样例 seed）"
 	@echo "make docker-down        停止并删除卷（清空演示数据）"
@@ -28,6 +29,9 @@ run-web2:
 
 demo:
 	$(PYTHON) -I scripts/demo.py
+
+interleaved-demo:
+	$(PYTHON) -I scripts/interleaved_demo.py
 
 concurrency-check:
 	$(PYTHON) -I scripts/concurrency_check.py

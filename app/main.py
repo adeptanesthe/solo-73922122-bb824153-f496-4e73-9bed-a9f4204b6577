@@ -20,10 +20,20 @@ class AdjudicationIn(BaseModel):
     record_a: int = Field(..., gt=0, description="第一条记录 ID")
     record_b: int = Field(..., gt=0, description="第二条记录 ID")
     decision: Literal["same", "different"]
+    demo_pause_seconds: float = Field(
+        0.0, ge=0.0, le=30.0,
+        description="演示用：让本次请求的关系计算阶段暂停指定秒数（不持任何锁）")
 
 
 class RevokeIn(BaseModel):
     adjudication_id: int = Field(..., gt=0)
+    demo_pause_seconds: float = Field(
+        0.0, ge=0.0, le=30.0,
+        description="演示用：让本次请求的关系计算阶段暂停指定秒数（不持任何锁）")
+
+
+class GateIn(BaseModel):
+    open: bool = Field(..., description="true 打开计算闸门，false 关闭（暂停本进程关系计算）")
 
 
 class PathIn(BaseModel):
@@ -131,12 +141,32 @@ def post_same_path(body: PathIn):
 
 @app.post("/api/adjudicate", summary="提交同人/不同人裁决（冲突则整次拒绝）")
 def post_adjudicate(body: AdjudicationIn):
-    return services.adjudicate(body.record_a, body.record_b, body.decision)
+    return services.adjudicate(body.record_a, body.record_b, body.decision,
+                               demo_pause_seconds=body.demo_pause_seconds)
 
 
 @app.post("/api/revoke", summary="撤销裁决并重新拆组")
 def post_revoke(body: RevokeIn):
-    return services.revoke(body.adjudication_id)
+    return services.revoke(body.adjudication_id,
+                           demo_pause_seconds=body.demo_pause_seconds)
+
+
+# --------------------------------------------------------------------------- #
+# Demo control: pause / resume this process's relationship computation
+# --------------------------------------------------------------------------- #
+
+@app.get("/api/demo/gate", summary="查看本进程关系计算闸门状态（演示控制）")
+def get_demo_gate():
+    return {"open": services.compute_gate_open()}
+
+
+@app.post("/api/demo/gate", summary="打开/关闭本进程关系计算闸门（演示控制）")
+def set_demo_gate(body: GateIn):
+    # Closing the gate parks this process's adjudications/revocations inside
+    # their computation phase — with no database lock held — so a second
+    # entry point can be shown to keep committing.  Per-process state.
+    services.set_compute_gate(body.open)
+    return {"open": services.compute_gate_open()}
 
 
 # --------------------------------------------------------------------------- #
